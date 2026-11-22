@@ -1,0 +1,106 @@
+name: Build DORATUM WORLD Unsigned IPA
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-unsigned-ipa:
+    name: Build iOS Unsigned IPA
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode Environment
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --show-sdk-path --sdk iphoneos
+          swift --version
+
+      - name: Install XcodeGen
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode Project
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+          ls -la DORATUM_WORLD.xcodeproj
+
+      - name: Build for Generic iOS Device (Unsigned)
+        run: |
+          set -euo pipefail
+          mkdir -p build/DerivedData
+          xcodebuild \
+            -project DORATUM_WORLD.xcodeproj \
+            -scheme DORATUM_WORLD \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            ONLY_ACTIVE_ARCH=NO \
+            clean build
+
+      - name: Locate Built App Bundle and Package Unsigned IPA
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 2 -name '*.app' -type d | head -n 1)"
+          if [ -z "${APP_PATH}" ] || [ ! -d "${APP_PATH}" ]; then
+            echo "ERROR: Built .app bundle not found in Release-iphoneos."
+            find build/DerivedData/Build/Products -maxdepth 3 || true
+            exit 1
+          fi
+          echo "Found app bundle: ${APP_PATH}"
+
+          rm -rf build/ipa Payload DORATUM-WORLD-unsigned.ipa
+          mkdir -p Payload
+          cp -R "${APP_PATH}" "Payload/DORATUM WORLD.app"
+
+          zip -r -y DORATUM-WORLD-unsigned.ipa Payload
+          ls -lh DORATUM-WORLD-unsigned.ipa
+
+      - name: Validate Unsigned IPA Structure and Integrity
+        run: |
+          set -euo pipefail
+          test -s DORATUM-WORLD-unsigned.ipa
+          unzip -t DORATUM-WORLD-unsigned.ipa
+
+          PLIST_PATH="Payload/DORATUM WORLD.app/Info.plist"
+          test -f "${PLIST_PATH}"
+
+          EXEC_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${PLIST_PATH}")"
+          echo "CFBundleExecutable: ${EXEC_NAME}"
+          test -n "${EXEC_NAME}"
+          test -f "Payload/DORATUM WORLD.app/${EXEC_NAME}"
+
+          METALLIB_PATH="Payload/DORATUM WORLD.app/default.metallib"
+          if [ -f "${METALLIB_PATH}" ]; then
+            echo "Verified compiled Metal shader library: ${METALLIB_PATH}"
+          else
+            echo "WARNING: default.metallib not found directly at app root; checking bundle contents..."
+            find "Payload/DORATUM WORLD.app" -maxdepth 2
+          fi
+
+          echo "IPA validation passed successfully."
+
+      - name: Upload Unsigned IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DORATUM-WORLD-Unsigned-IPA
+          path: DORATUM-WORLD-unsigned.ipa
+          retention-days: 30
+          if-no-files-found: error
